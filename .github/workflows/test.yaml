@@ -24,6 +24,7 @@ jobs:
       with:
         python-version: '3.9'
         ape-version-pin: '==0.5.2'
+        ape-plugins-pin: 'solidity==0.5.4 vyper==0.5.2 hardhat==0.5.5'
 
     - name: install vyper
       run: pip install git+https://github.com/vyperlang/vyper
