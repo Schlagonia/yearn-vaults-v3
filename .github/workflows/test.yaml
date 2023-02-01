@@ -20,12 +20,12 @@ jobs:
 
     steps:
     - uses: actions/checkout@v1
-    - uses: ApeWorX/github-action@v1.1
+    - uses: Schlagonia/github-action
       with:
         python-version: '3.9'
         ape-version-pin: '==0.5.9'
         ape-plugins-list: 'solidity==0.5.4 vyper==0.5.2 hardhat==0.5.5'
-        
+
     - name: install vyper
       run: pip install git+https://github.com/vyperlang/vyper
     - name: Compile contracts
