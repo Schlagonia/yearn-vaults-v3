@@ -2,6 +2,7 @@ name: yearn-v3
 
 plugins:
   - name: solidity
+    version: 0.5.4
   - name: vyper
   - name: hardhat
 
