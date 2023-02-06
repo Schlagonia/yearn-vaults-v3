@@ -2,13 +2,20 @@
 
 pragma solidity 0.8.14;
 
-import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {BaseStrategy, ERC20} from "../../../BaseStrategy.sol";
 
-contract Generic4626 is ERC4626 {
-    constructor(address _asset)
-        ERC4626(IERC20Metadata(address(_asset)))
-        ERC20("a", "a")
-    {}
+contract Generic4626 is BaseStrategy {
+    constructor(ERC20 _asset) BaseStrategy(_asset, "name", "symbol") {}
+
+    function _invest(uint256 _amount) internal override returns (uint256) {
+        return _amount;
+    }
+
+    function _withdraw(uint256 _amount) internal override returns (uint256) {
+        return _amount;
+    }
+
+    function _totalInvested() internal override returns (uint256) {
+        return asset.balanceOf(address(this));
+    }
 }
