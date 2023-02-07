@@ -109,7 +109,6 @@ abstract contract BaseStrategy {
         require(msg.sender == management, "not vault");
     }
 
-    // TODO: Add support for non 18 decimal assets
     constructor(
         ERC20 _asset,
         string memory name_,
@@ -133,7 +132,6 @@ abstract contract BaseStrategy {
 
     function deposit(uint256 assets, address receiver)
         public
-        virtual
         returns (uint256 shares)
     {
         // check lower than max
@@ -150,7 +148,6 @@ abstract contract BaseStrategy {
 
     function mint(uint256 shares, address receiver)
         public
-        virtual
         returns (uint256 assets)
     {
         require(shares <= _maxMint(receiver), "ERC4626: mint more than max");
@@ -164,7 +161,7 @@ abstract contract BaseStrategy {
         uint256 assets,
         address receiver,
         address owner
-    ) public virtual returns (uint256 shares) {
+    ) public returns (uint256 shares) {
         require(
             assets <= _maxWithdraw(owner),
             "ERC4626: withdraw more than max"
@@ -184,7 +181,7 @@ abstract contract BaseStrategy {
         uint256 shares,
         address receiver,
         address owner
-    ) public virtual returns (uint256 assets) {
+    ) public returns (uint256 assets) {
         require(shares <= _maxRedeem(owner), "ERC4626: redeem more than max");
 
         // pre redeem hook
@@ -267,7 +264,6 @@ abstract contract BaseStrategy {
     function convertToShares(uint256 assets)
         public
         view
-        virtual
         returns (uint256)
     {
         uint256 supply = totalSupply(); // Saves an extra SLOAD if totalSupply() is non-zero.
@@ -281,7 +277,6 @@ abstract contract BaseStrategy {
     function convertToAssets(uint256 shares)
         public
         view
-        virtual
         returns (uint256)
     {
         uint256 supply = totalSupply(); // Saves an extra SLOAD if totalSupply() is non-zero.
@@ -295,13 +290,12 @@ abstract contract BaseStrategy {
     function previewDeposit(uint256 assets)
         public
         view
-        virtual
         returns (uint256)
     {
         return convertToShares(assets);
     }
 
-    function previewMint(uint256 shares) public view virtual returns (uint256) {
+    function previewMint(uint256 shares) public view returns (uint256) {
         uint256 supply = totalSupply(); // Saves an extra SLOAD if totalSupply() is non-zero.
 
         return
@@ -313,7 +307,6 @@ abstract contract BaseStrategy {
     function previewWithdraw(uint256 assets)
         public
         view
-        virtual
         returns (uint256)
     {
         uint256 supply = totalSupply(); // Saves an extra SLOAD if totalSupply() is non-zero.
@@ -327,7 +320,6 @@ abstract contract BaseStrategy {
     function previewRedeem(uint256 shares)
         public
         view
-        virtual
         returns (uint256)
     {
         return convertToAssets(shares);
