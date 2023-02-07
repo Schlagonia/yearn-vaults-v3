@@ -4,19 +4,38 @@ pragma solidity 0.8.14;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+
+import {BaseLibrary} from "./BaseLibrary.sol";
 
 interface IBaseFee {
     function isCurrentBaseFeeAcceptable() external view returns (bool);
 }
 
-abstract contract BaseStrategy is ERC20 {
-    using SafeERC20 for ERC20;
+abstract contract BaseStrategy {
     using Math for uint256;
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
     //////////////////////////////////////////////////////////////*/
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
 
     event Deposit(
         address indexed caller,
@@ -40,11 +59,16 @@ abstract contract BaseStrategy is ERC20 {
     );
 
     /*//////////////////////////////////////////////////////////////
-                               IMMUTABLES
+                               CONSTANTS
     //////////////////////////////////////////////////////////////*/
 
-    uint256 internal constant MAX_BPS = 10_000;
-    uint256 internal constant MAX_BPS_EXTENDED = 1_000_000_000_000;
+    // storage slot to use for asset amount variables
+    bytes32 internal constant ASSETS_STRATEGY_STORAGE = 
+        bytes32(uint256(keccak256("yearn.assets.strategy.storage")) - 1);
+
+    // storage slot to use for report/ profit locking variables
+    bytes32 internal constant PROFIT_LOCKING_STORAGE =
+        bytes32(uint256(keccak256("yearn.profit.locking.storage")) - 1);
 
     /*//////////////////////////////////////////////////////////////
                                IMMUTABLES
@@ -56,16 +80,25 @@ abstract contract BaseStrategy is ERC20 {
                             STORAGE
     //////////////////////////////////////////////////////////////*/
 
-    uint256 public totalDebt;
-    uint256 public totalIdle;
-    address public management;
-    uint256 public lastReport;
-    uint256 public maxReportDelay;
-    address public treasury;
-    uint256 public performanceFee;
+    struct AssetsData {
+        uint256 totalIdle;
+        uint256 totalDebt;
+    }
 
-    uint256 public fullProfitUnlockDate;
-    uint256 public profitUnlockingRate;
+    struct ProfitData {
+        uint256 fullProfitUnlockDate;
+        uint256 profitUnlockingRate;
+        uint256 profitMaxUnlockTime;
+        uint256 lastReport;
+        uint256 performanceFee;
+        address treasury;
+    }
+
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+
+    address public management;
 
     modifier onlyManagement() {
         _onlyManagement();
@@ -79,18 +112,21 @@ abstract contract BaseStrategy is ERC20 {
     // TODO: Add support for non 18 decimal assets
     constructor(
         ERC20 _asset,
-        string memory _name,
-        string memory _symbol
-    ) ERC20(_name, _symbol) {
+        string memory name_,
+        string memory symbol_
+    ) { 
         asset = _asset;
+        _name = name_;
+        _symbol = symbol_;
+        _decimals = IERC20Metadata(address(_asset)).decimals();
         management = msg.sender;
 
-        maxReportDelay = 10 days;
-        lastReport = block.timestamp;
+        _profitStorage().profitMaxUnlockTime = 10 days;
+        _profitStorage().lastReport = block.timestamp;
     }
 
     function totalAssets() public view returns (uint256) {
-        return totalIdle + totalDebt;
+        return BaseLibrary.totalAssets();
     }
 
     // TODO: Make non-reentrant for all 4 deposit/withdraw functions
@@ -105,23 +141,11 @@ abstract contract BaseStrategy is ERC20 {
             assets <= _maxDeposit(receiver),
             "ERC4626: deposit more than max"
         );
-        // Check for rounding error since we round down in previewDeposit.
-        require((shares = previewDeposit(assets)) != 0, "ZERO_SHARES");
 
-        // Need to transfer before minting or ERC777s could reenter.
-        asset.safeTransferFrom(msg.sender, address(this), assets);
+        // allow library to handle deposit
+        shares = BaseLibrary.deposit(asset, assets, receiver);
 
-        // mint
-        _mint(receiver, shares);
-
-        emit Deposit(msg.sender, receiver, assets, shares);
-
-        // invest if applicable
-        uint256 invested = _invest(assets);
-
-        // adjust total Assets
-        totalDebt += invested;
-        totalIdle += (invested - assets);
+        _depositFunds(assets);
     }
 
     function mint(uint256 shares, address receiver)
@@ -131,21 +155,9 @@ abstract contract BaseStrategy is ERC20 {
     {
         require(shares <= _maxMint(receiver), "ERC4626: mint more than max");
 
-        assets = previewMint(shares); // No need to check for rounding error, previewMint rounds up.
+        assets = BaseLibrary.mint(asset, shares, receiver);
 
-        // Need to transfer before minting or ERC777s could reenter.
-        asset.safeTransferFrom(msg.sender, address(this), assets);
-
-        _mint(receiver, shares);
-
-        emit Deposit(msg.sender, receiver, assets, shares);
-
-        // invest if applicable
-        uint256 invested = _invest(assets);
-
-        // adjust total Assets
-        totalDebt += invested;
-        totalIdle += (invested - assets);
+        _depositFunds(assets);
     }
 
     function withdraw(
@@ -158,23 +170,14 @@ abstract contract BaseStrategy is ERC20 {
             "ERC4626: withdraw more than max"
         );
 
-        shares = previewWithdraw(assets); // No need to check for rounding error, previewWithdraw rounds up.
+        // pre withdraw hook
+        shares = BaseLibrary.beforeWithdraw(assets, owner);
 
-        if (msg.sender != owner) {
-            _spendAllowance(owner, msg.sender, shares);
-        }
+        // free up the funds needed
+        _freeFunds(assets);
 
-        uint256 idle = totalIdle;
-        uint256 withdrawn = idle >= assets ? _withdraw(assets) : 0;
-
-        _burn(owner, shares);
-
-        totalIdle -= idle > assets ? assets : idle;
-        totalDebt -= withdrawn;
-
-        asset.safeTransfer(receiver, assets);
-
-        emit Withdraw(msg.sender, receiver, owner, assets, shares);
+        // post withdraw library hook
+        BaseLibrary.afterWithdraw(asset, assets, shares, receiver, owner);
     }
 
     function redeem(
@@ -184,155 +187,82 @@ abstract contract BaseStrategy is ERC20 {
     ) public virtual returns (uint256 assets) {
         require(shares <= _maxRedeem(owner), "ERC4626: redeem more than max");
 
-        if (msg.sender != owner) {
-            _spendAllowance(owner, msg.sender, shares);
-        }
+        // pre redeem hook
+        assets = BaseLibrary.beforeRedeem(shares, owner);
 
-        // Check for rounding error since we round down in previewRedeem.
-        require((assets = previewRedeem(shares)) != 0, "ZERO_ASSETS");
+        // free up the funds needed
+        _freeFunds(assets);
 
-        // withdraw if we dont have enough idle
-        uint256 idle = totalIdle;
-        uint256 withdrawn = idle >= assets ? _withdraw(assets) : 0;
-
-        _burn(owner, shares);
-
-        // adjust state variables
-        totalIdle -= idle > assets ? assets : idle;
-        totalDebt -= withdrawn;
-
-        asset.safeTransfer(receiver, assets);
-
-        emit Withdraw(msg.sender, receiver, owner, assets, shares);
+        // post withdraw library hook
+        BaseLibrary.afterWithdraw(asset, assets, shares, receiver, owner);
     }
 
-    // TODO: add locked shares or locked profit calculations based on how profits will be locked
-
-    // TODO: import V3 type logic for reporting profits
-    function report()
-        external
-        onlyManagement
-        returns (uint256 profit, uint256 loss)
-    {
-        // burn unlocked shares
-        _burnUnlockedShares();
-
-        // calculate profit
-        uint256 invested = _totalInvested();
-        uint256 debt = totalDebt;
-
-        if (invested >= debt) {
-            profit = invested - debt;
-            debt += profit;
-        } else {
-            loss = debt - invested;
-            debt -= loss;
-        }
-
-        // TODO: healthcheck ?
-
-        uint256 fees;
-        uint256 sharesToLock;
-        // only assess fees and lock shares if we have a profit
-        if (profit > 0) {
-            // asses fees
-            fees = (profit * performanceFee) / MAX_BPS;
-            // TODO: add a max percent to take?
-            // dont take more than the profit
-            if (fees > profit) fees = profit;
-
-            // issue all new shares to self
-            sharesToLock = convertToShares(profit - fees);
-            uint256 feeShares = convertToShares(fees);
-
-            // send shares to treasury
-            _mint(treasury, feeShares);
-
-            // mint the rest of profit to self for locking
-            _mint(address(this), sharesToLock);
-        }
-
-        // lock (profit - fees) of shares issued
-        uint256 remainingTime;
-        uint256 _fullProfitUnlockDate = fullProfitUnlockDate;
-        if (_fullProfitUnlockDate > block.timestamp) {
-            remainingTime = _fullProfitUnlockDate - block.timestamp;
-        }
-
-        // Update unlocking rate and time to fully unlocked
-        uint256 previouslyLockedShares = balanceOf(address(this));
-        uint256 totalLockedShares = previouslyLockedShares + sharesToLock;
-        uint256 _profitMaxUnlockTime = maxReportDelay;
-        if (totalLockedShares > 0 && _profitMaxUnlockTime > 0) {
-            // new_profit_locking_period is a weighted average between the remaining time of the previously locked shares and the PROFIT_MAX_UNLOCK_TIME
-            uint256 newProfitLockingPeriod = (previouslyLockedShares *
-                remainingTime +
-                sharesToLock *
-                _profitMaxUnlockTime) / totalLockedShares;
-            profitUnlockingRate =
-                (totalLockedShares * MAX_BPS_EXTENDED) /
-                newProfitLockingPeriod;
-            fullProfitUnlockDate = block.timestamp + newProfitLockingPeriod;
-        } else {
-            // NOTE: only setting this to 0 will turn in the desired effect, no need to update last_profit_update or fullProfitUnlockDate
-            profitUnlockingRate = 0;
-        }
-
-        lastReport = block.timestamp;
-
-        // emit event with info
-        emit Reported(profit, loss, fees);
-
-        // invest any free funds
-        uint256 newlyInvested = _invest(totalIdle);
-
-        // update storage
-        totalDebt = (debt + newlyInvested);
-        totalIdle -= newlyInvested;
+    function reportTrigger() external view returns (bool) {
+        return _reportTrigger();
     }
 
-    function trigger() external view returns (bool) {
-        return _trigger();
+    /*//////////////////////////////////////////////////////////////
+                        STORAGE GETTERS
+    //////////////////////////////////////////////////////////////*/
+
+    function _assetsStorage() private pure returns (AssetsData storage s) {
+        // Since STORAGE_SLOT is a constant, we have to put a variable
+        // on the stack to access it from an inline assembly block.
+        bytes32 slot = PROFIT_LOCKING_STORAGE;
+        assembly {
+            s.slot := slot
+        }
+    }
+
+    function _profitStorage() private pure returns (ProfitData storage s) {
+        // Since STORAGE_SLOT is a constant, we have to put a variable
+        // on the stack to access it from an inline assembly block.
+        bytes32 slot = PROFIT_LOCKING_STORAGE;
+        assembly {
+            s.slot := slot
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
                             ACCOUNTING LOGIC
     //////////////////////////////////////////////////////////////*/
 
-    // TODO: cant override totalSupply() with a call to totalSupply() but cant access _totalSupply
-    function vaultSupply() public view returns (uint256) {
-        return totalSupply() - _unlockedShares();
+    function report() external onlyManagement returns (uint256 profit, uint256 loss) {
+        uint256 invested = _totalInvested();
+
+        (profit, loss) = BaseLibrary.report(invested);
+
+        // invest any idle funds
+        _depositFunds(0);
     }
 
-    function _unlockedShares() internal view returns (uint256) {
-        uint256 _fullProfitUnlockDate = fullProfitUnlockDate;
-        uint256 unlockedShares = 0;
-        if (_fullProfitUnlockDate > block.timestamp) {
-            unlockedShares =
-                (profitUnlockingRate * (block.timestamp - lastReport)) /
-                MAX_BPS_EXTENDED;
-        } else if (_fullProfitUnlockDate != 0) {
-            // All shares have been unlocked
-            unlockedShares = balanceOf(address(this));
-        }
+    // post deposit/report hook to deposit any loose funds
+    function _depositFunds(uint256 _newAmount) internal {
+        AssetsData storage a = _assetsStorage();
 
-        return unlockedShares;
+        // invest if applicable
+        uint256 toInvest = a.totalIdle + _newAmount;
+        uint256 invested = _invest(toInvest);
+
+        // adjust total Assets
+        a.totalDebt += invested;
+        // check if we invested all the loose asset
+        a.totalIdle = invested >= toInvest ? 0 : toInvest - invested;
     }
 
-    function _burnUnlockedShares() internal {
-        uint256 unlcokdedShares = _unlockedShares();
-        if (unlcokdedShares == 0) {
-            return;
-        }
+    function _freeFunds(uint256 _amount) internal {
+        AssetsData storage a = _assetsStorage();
 
-        // TODO: this doesnt
-        // update variables (done here to keep _unlcokdedShares() as a view function)
-        if (fullProfitUnlockDate <= block.timestamp) {
-            profitUnlockingRate = 0;
-        }
+        // withdraw if we dont have enough idle
+        uint256 idle = a.totalIdle;
+        uint256 withdrawn = idle >= _amount ? _withdraw(_amount) : 0;
 
-        _burn(address(this), unlcokdedShares);
+        // adjust state variables
+        a.totalIdle -= idle > _amount ? _amount : idle;
+        a.totalDebt -= withdrawn;
     }
+
+    // TODO: These should probably not be virtual?
 
     function convertToShares(uint256 assets)
         public
@@ -340,7 +270,7 @@ abstract contract BaseStrategy is ERC20 {
         virtual
         returns (uint256)
     {
-        uint256 supply = vaultSupply(); // Saves an extra SLOAD if vaultSupply() is non-zero.
+        uint256 supply = totalSupply(); // Saves an extra SLOAD if totalSupply() is non-zero.
 
         return
             supply == 0
@@ -354,7 +284,7 @@ abstract contract BaseStrategy is ERC20 {
         virtual
         returns (uint256)
     {
-        uint256 supply = vaultSupply(); // Saves an extra SLOAD if vaultSupply() is non-zero.
+        uint256 supply = totalSupply(); // Saves an extra SLOAD if totalSupply() is non-zero.
 
         return
             supply == 0
@@ -372,7 +302,7 @@ abstract contract BaseStrategy is ERC20 {
     }
 
     function previewMint(uint256 shares) public view virtual returns (uint256) {
-        uint256 supply = vaultSupply(); // Saves an extra SLOAD if vaultSupply() is non-zero.
+        uint256 supply = totalSupply(); // Saves an extra SLOAD if totalSupply() is non-zero.
 
         return
             supply == 0
@@ -386,7 +316,7 @@ abstract contract BaseStrategy is ERC20 {
         virtual
         returns (uint256)
     {
-        uint256 supply = vaultSupply(); // Saves an extra SLOAD if vaultSupply() is non-zero.
+        uint256 supply = totalSupply(); // Saves an extra SLOAD if totalSupply() is non-zero.
 
         return
             supply == 0
@@ -410,26 +340,24 @@ abstract contract BaseStrategy is ERC20 {
     function maxDeposit(address _owner)
         external
         view
-        virtual
         returns (uint256)
     {
         return _maxDeposit(_owner);
     }
 
-    function maxMint(address _owner) external view virtual returns (uint256) {
+    function maxMint(address _owner) external view returns (uint256) {
         return _maxMint(_owner);
     }
 
     function maxWithdraw(address _owner)
         external
         view
-        virtual
         returns (uint256)
     {
         return _maxWithdraw(_owner);
     }
 
-    function maxRedeem(address _owner) external view virtual returns (uint256) {
+    function maxRedeem(address _owner) external view returns (uint256) {
         return _maxRedeem(_owner);
     }
 
@@ -444,6 +372,8 @@ abstract contract BaseStrategy is ERC20 {
         returns (uint256 withdrawnAmount);
 
     // will invest up to the amount of 'assets' and return the actual amount that was invested
+    // TODO: this should be able to invest asset.balnceOf(address(this)) since its always post report/deposit
+    //      depositing donated want wont reflect in pps until the next report cycle.    
     function _invest(uint256 assets)
         internal
         virtual
@@ -457,9 +387,9 @@ abstract contract BaseStrategy is ERC20 {
                     OPTIONAL TO OVERRIDE BY STRATEGIST
     //////////////////////////////////////////////////////////////*/
 
-    function _trigger() internal view virtual returns (bool) {
+    function _reportTrigger() internal view virtual returns (bool) {
         if (!_isBaseFeeAcceptable()) {
-            return block.timestamp - lastReport > maxReportDelay;
+            return block.timestamp - _profitStorage().lastReport > _profitStorage().profitMaxUnlockTime;
         }
     }
 
@@ -494,5 +424,127 @@ abstract contract BaseStrategy is ERC20 {
         return
             IBaseFee(0xb5e1CAcB567d98faaDB60a1fD4820720141f064F)
                 .isCurrentBaseFeeAcceptable();
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        ERC20 FUNCTIONS
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    /**
+     * @dev Returns the symbol of the token, usually a shorter version of the
+     * name.
+     */
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    /**
+     * @dev Returns the number of decimals used to get its user representation.
+     * For example, if `decimals` equals `2`, a balance of `505` tokens should
+     * be displayed to a user as `5.05` (`505 / 10 ** 2`).
+     */
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view returns (uint256) {
+        return BaseLibrary.totalSupply();
+    }
+
+    function balanceOf(address _owner) public view returns (uint256) {
+        return BaseLibrary.balanceOf(_owner);
+    }
+
+    function allowance(address _owner, address _spender)
+        public
+        view
+        returns (uint256)
+    {
+        return BaseLibrary.allowance(_owner, _spender);
+    }
+
+    function transfer(address to, uint256 amount)
+        public
+        returns (bool)
+    {
+        return BaseLibrary.transfer(to, amount);
+    }
+
+    function approve(address spender, uint256 amount)
+        public
+        returns (bool)
+    {
+        return BaseLibrary.approve(spender, amount);
+    }
+
+    /**
+     * @dev See {IERC20-transferFrom}.
+     *
+     * Emits an {Approval} event indicating the updated allowance. This is not
+     * required by the EIP. See the note at the beginning of {ERC20}.
+     *
+     * NOTE: Does not update the allowance if the current allowance
+     * is the maximum `uint256`.
+     *
+     * Requirements:
+     *
+     * - `from` and `to` cannot be the zero address.
+     * - `from` must have a balance of at least `amount`.
+     * - the caller must have allowance for ``from``'s tokens of at least
+     * `amount`.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public returns (bool) {
+        return BaseLibrary.transferFrom(from, to, amount);
+    }
+
+    /**
+     * @dev Atomically increases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function increaseAllowance(address spender, uint256 addedValue)
+        public
+        returns (bool)
+    {
+        return BaseLibrary.increaseAllowance(spender, addedValue);
+    }
+
+    /**
+     * @dev Atomically decreases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     * - `spender` must have allowance for the caller of at least
+     * `subtractedValue`.
+     */
+    function decreaseAllowance(address spender, uint256 subtractedValue)
+        public
+        returns (bool)
+    {
+        return BaseLibrary.decreaseAllowance(spender, subtractedValue);
     }
 }
