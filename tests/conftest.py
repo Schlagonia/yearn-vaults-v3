@@ -12,6 +12,11 @@ from hexbytes import HexBytes
 w3 = Web3(HTTPProvider(os.getenv("CHAIN_PROVIDER", "http://127.0.0.1:8545")))
 
 
+@pytest.fixture(scope="session")
+def solidity(project):
+    return project.compiler_manager.registered_compilers[".sol"]
+
+
 # Accounts
 @pytest.fixture(scope="session")
 def gov(accounts):
@@ -213,6 +218,12 @@ def create_vault(project, gov, vault_factory):
     yield create_vault
 
 
+@pytest.fixture(scope="session", autouse=True)
+def deploy_libraries(project, gov, solidity):
+    library = project.BaseLibrary.deploy(sender=gov)
+    solidity.add_library(library)
+
+
 # create default liquid strategy with 0 fee
 @pytest.fixture(scope="session")
 def create_strategy(project, strategist):
@@ -250,8 +261,12 @@ def create_faulty_strategy(project, strategist):
 
 
 @pytest.fixture(scope="session")
-def create_generic_strategy(project, strategist):
+def create_generic_strategy(project, solidity, gov, deploy_libraries, strategist):
     def create_generic_strategy(asset):
+        #_ = deploy_libraries  # Ensure deploy_libraries fixture happens first.
+        library = project.BaseLibrary.deploy(sender=gov)
+        solidity.add_library(library)
+
         return strategist.deploy(project.Generic4626, asset)
 
     yield create_generic_strategy
