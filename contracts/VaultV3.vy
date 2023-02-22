@@ -51,13 +51,10 @@ event Approval:
     spender: indexed(address)
     value: uint256
 
-# STRATEGY MANAGEMENT EVENTS
-event StrategyAdded:
+# STRATEGY EVENTS
+event StrategyChanged:
     strategy: indexed(address)
-
-event StrategyRevoked:
-    strategy: indexed(address)
-    loss: uint256
+    change_type: indexed(StrategyChangeType)
     
 event StrategyReported:
     strategy: indexed(address)
@@ -133,6 +130,10 @@ enum Roles:
     PROFIT_UNLOCK_MANAGER # sets the profit_max_unlock_time
     SWEEPER # can sweep tokens from the vault
     EMERGENCY_MANAGER # can shutdown vault in an emergency
+
+enum StrategyChangeType:
+    ADDED
+    REVOKED
 
 # IMMUTABLE #
 ASSET: immutable(ERC20)
@@ -601,39 +602,39 @@ def _redeem(sender: address, receiver: address, owner: address, shares_to_burn: 
 ## STRATEGY MANAGEMENT ##
 @internal
 def _add_strategy(new_strategy: address):
-   assert new_strategy != empty(address), "strategy cannot be zero address"
-   assert IStrategy(new_strategy).asset() == ASSET.address, "invalid asset"
-   assert self.strategies[new_strategy].activation == 0, "strategy already active"
+    assert new_strategy != empty(address), "strategy cannot be zero address"
+    assert IStrategy(new_strategy).asset() == ASSET.address, "invalid asset"
+    assert self.strategies[new_strategy].activation == 0, "strategy already active"
 
-   self.strategies[new_strategy] = StrategyParams({
-      activation: block.timestamp,
-      last_report: block.timestamp,
-      current_debt: 0,
-      max_debt: 0
-      })
+    self.strategies[new_strategy] = StrategyParams({
+        activation: block.timestamp,
+        last_report: block.timestamp,
+        current_debt: 0,
+        max_debt: 0
+    })
 
-   log StrategyAdded(new_strategy)
+    log StrategyChanged(new_strategy, StrategyChangeType.ADDED)
 
 @internal
 def _revoke_strategy(strategy: address, force: bool=False):
-   assert self.strategies[strategy].activation != 0, "strategy not active"
-   loss: uint256 = 0
+    assert self.strategies[strategy].activation != 0, "strategy not active"
+    loss: uint256 = 0
+    
+    if self.strategies[strategy].current_debt != 0:
+        assert force, "strategy has debt"
+        loss = self.strategies[strategy].current_debt
+        self.total_debt -= loss
+        log StrategyReported(strategy, 0, loss, 0, 0, 0, 0)
 
-   if self.strategies[strategy].current_debt != 0:
-    assert force, "strategy has debt"
-    loss = self.strategies[strategy].current_debt
-    self.total_debt -= loss
-   
-
-   # NOTE: strategy params are set to 0 (WARNING: it can be readded)
-   self.strategies[strategy] = StrategyParams({
+    # NOTE: strategy params are set to 0 (WARNING: it can be readded)
+    self.strategies[strategy] = StrategyParams({
       activation: 0,
       last_report: 0,
       current_debt: 0,
       max_debt: 0
-      })
+    })
 
-   log StrategyRevoked(strategy, loss)
+    log StrategyChanged(strategy, StrategyChangeType.REVOKED)
 
 # DEBT MANAGEMENT #
 @internal
