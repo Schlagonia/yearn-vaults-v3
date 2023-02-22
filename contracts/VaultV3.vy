@@ -58,7 +58,7 @@ event StrategyAdded:
 event StrategyRevoked:
     strategy: indexed(address)
     loss: uint256
-
+    
 event StrategyReported:
     strategy: indexed(address)
     gain: uint256
@@ -615,25 +615,25 @@ def _add_strategy(new_strategy: address):
    log StrategyAdded(new_strategy)
 
 @internal
-def _revoke_strategy(old_strategy: address, force: bool=False):
-   assert self.strategies[old_strategy].activation != 0, "strategy not active"
+def _revoke_strategy(strategy: address, force: bool=False):
+   assert self.strategies[strategy].activation != 0, "strategy not active"
    loss: uint256 = 0
 
-   if self.strategies[old_strategy].current_debt != 0:
+   if self.strategies[strategy].current_debt != 0:
     assert force, "strategy has debt"
-    loss = self.strategies[old_strategy].current_debt
+    loss = self.strategies[strategy].current_debt
     self.total_debt -= loss
    
 
    # NOTE: strategy params are set to 0 (WARNING: it can be readded)
-   self.strategies[old_strategy] = StrategyParams({
+   self.strategies[strategy] = StrategyParams({
       activation: 0,
       last_report: 0,
       current_debt: 0,
       max_debt: 0
       })
 
-   log StrategyRevoked(old_strategy, loss)
+   log StrategyRevoked(strategy, loss)
 
 # DEBT MANAGEMENT #
 @internal
@@ -1003,12 +1003,12 @@ def add_strategy(new_strategy: address):
     self._add_strategy(new_strategy)
 
 @external
-def revoke_strategy(old_strategy: address):
+def revoke_strategy(strategy: address):
     self._enforce_role(msg.sender, Roles.REVOKE_STRATEGY_MANAGER)
-    self._revoke_strategy(old_strategy)
+    self._revoke_strategy(strategy)
 
 @external
-def force_revoke_strategy(old_strategy: address):
+def force_revoke_strategy(strategy: address):
     """
     The vault will remove the inputed strategy and write off any debt left in it as loss. 
     This function is a dangerous function as it can force a strategy to take a loss. 
@@ -1016,7 +1016,7 @@ def force_revoke_strategy(old_strategy: address):
     Note that if a strategy is removed erroneously it can be re-added and the loss will be credited as profit. Fees will apply
     """
     self._enforce_role(msg.sender, Roles.FORCE_REVOKE_MANAGER)
-    self._revoke_strategy(old_strategy, True)
+    self._revoke_strategy(strategy, True)
 
 ## DEBT MANAGEMENT ##
 @external
