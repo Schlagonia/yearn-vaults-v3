@@ -158,14 +158,16 @@ def vault_blueprint(project, gov):
 
 @pytest.fixture(scope="session")
 def vault_factory(project, gov, vault_blueprint):
-    return gov.deploy(project.VaultFactory, "Vault V3 Factory 0.0.1", vault_blueprint)
+    return gov.deploy(
+        project.VaultFactory, "Vault V3 Factory 3.0.1-beta", vault_blueprint
+    )
 
 
 @pytest.fixture(scope="session")
 def set_factory_fee_config(project, gov, vault_factory):
     def set_factory_fee_config(fee_bps, fee_recipient):
-        vault_factory.set_protocol_fee_bps(fee_bps, sender=gov)
         vault_factory.set_protocol_fee_recipient(fee_recipient, sender=gov)
+        vault_factory.set_protocol_fee_bps(fee_bps, sender=gov)
 
     yield set_factory_fee_config
 
@@ -335,16 +337,6 @@ def deploy_flexible_accountant(project, gov):
         return flexible_accountant
 
     yield deploy_flexible_accountant
-
-
-@pytest.fixture(scope="session")
-def deploy_generic_queue_manager(project, gov):
-    def deploy_generic_queue_manager():
-        queue_manager = gov.deploy(project.QueueManager)
-
-        return queue_manager
-
-    yield deploy_generic_queue_manager
 
 
 @pytest.fixture(scope="session")
