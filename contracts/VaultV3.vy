@@ -42,6 +42,7 @@ interface IStrategy:
     def maxDeposit(receiver: address) -> uint256: view
     def maxWithdraw(owner: address) -> uint256: view
     def withdraw(amount: uint256, receiver: address, owner: address) -> uint256: nonpayable
+    def redeem(shares: uint256, receiver: address, owner: address) -> uint256: nonpayable
     def deposit(assets: uint256, receiver: address) -> uint256: nonpayable
     def totalAssets() -> (uint256): view
     def convertToAssets(shares: uint256) -> (uint256): view
@@ -752,7 +753,8 @@ def _redeem(
                 continue
             
             # WITHDRAW FROM STRATEGY
-            IStrategy(strategy).withdraw(assets_to_withdraw, self, self)
+            shares_to_withdraw: uint256 = IStrategy(strategy).convertToShares(assets_to_withdraw)
+            IStrategy(strategy).redeem(shares_to_withdraw, self, self)
             post_balance: uint256 = ASSET.balanceOf(self)
             
             loss: uint256 = 0
@@ -1516,7 +1518,8 @@ def withdraw(
     @return The amount of shares actually burnt.
     """
     shares: uint256 = self._convert_to_shares(assets, Rounding.ROUND_UP)
-    self._redeem(msg.sender, receiver, owner, shares, strategies)
+    withdrawn: uint256 = self._redeem(msg.sender, receiver, owner, shares, strategies)
+    assert withdrawn >= assets, "to much loss"
     return shares
 
 @external
