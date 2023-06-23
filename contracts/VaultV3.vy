@@ -638,6 +638,7 @@ def _redeem(
     sender: address, 
     receiver: address, 
     owner: address, 
+    assets: uint256,
     shares_to_burn: uint256, 
     strategies: DynArray[address, MAX_QUEUE]
 ) -> uint256:
@@ -666,7 +667,7 @@ def _redeem(
         self._spend_allowance(owner, sender, shares_to_burn)
 
     # The amount of the underlying token to withdraw.
-    requested_assets: uint256 = self._convert_to_assets(shares, Rounding.ROUND_DOWN)
+    requested_assets: uint256 = assets
 
     # load to memory to save gas
     curr_total_idle: uint256 = self.total_idle
@@ -1518,7 +1519,8 @@ def withdraw(
     @return The amount of shares actually burnt.
     """
     shares: uint256 = self._convert_to_shares(assets, Rounding.ROUND_UP)
-    withdrawn: uint256 = self._redeem(msg.sender, receiver, owner, shares, strategies)
+    withdrawn: uint256 = self._redeem(msg.sender, receiver, owner, assets, shares, strategies)
+    # Make sure we got out enough assets.
     assert withdrawn >= assets, "to much loss"
     return shares
 
@@ -1538,8 +1540,9 @@ def redeem(
     @param strategies Optional array of strategies to withdraw from.
     @return The amount of assets actually withdrawn.
     """
-    assets: uint256 = self._redeem(msg.sender, receiver, owner, shares, strategies)
-    return assets
+    assets: uint256 = self._convert_to_assets(shares, Rounding.ROUND_DOWN)
+    # Always return the actual amount of assets withdrawn.
+    return self._redeem(msg.sender, receiver, owner, assets, shares, strategies)
 
 @external
 def approve(spender: address, amount: uint256) -> bool:
