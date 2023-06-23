@@ -45,8 +45,8 @@ interface IStrategy:
     def redeem(shares: uint256, receiver: address, owner: address) -> uint256: nonpayable
     def deposit(assets: uint256, receiver: address) -> uint256: nonpayable
     def totalAssets() -> (uint256): view
-    def convertToAssets(shares: uint256) -> (uint256): view
-    def convertToShares(assets: uint256) -> (uint256): view
+    def convertToAssets(shares: uint256) -> uint256: view
+    def convertToShares(assets: uint256) -> uint256: view
 
 interface IAccountant:
     def report(strategy: address, gain: uint256, loss: uint256) -> (uint256, uint256): nonpayable
@@ -1508,6 +1508,7 @@ def withdraw(
     assets: uint256, 
     receiver: address, 
     owner: address, 
+    max_loss: uint256 = 0,
     strategies: DynArray[address, MAX_QUEUE] = []
 ) -> uint256:
     """
@@ -1515,13 +1516,14 @@ def withdraw(
     @param assets The amount of asset to withdraw.
     @param receiver The address to receive the assets.
     @param owner The address whos shares are being burnt.
+    @param max_loss Optional amount of acceptable loss in Basis Points.
     @param strategies Optional array of strategies to withdraw from.
     @return The amount of shares actually burnt.
     """
     shares: uint256 = self._convert_to_shares(assets, Rounding.ROUND_UP)
     withdrawn: uint256 = self._redeem(msg.sender, receiver, owner, assets, shares, strategies)
     # Make sure we got out enough assets.
-    assert withdrawn >= assets, "to much loss"
+    assert assets - withdrawn <= assets * max_loss / MAX_BPS, "to much loss"
     return shares
 
 @external
