@@ -637,7 +637,7 @@ def _assess_share_of_unrealised_losses(strategy: address, assets_needed: uint256
 def _redeem(
     sender: address, 
     receiver: address, 
-    owner: address, 
+    owner: address,
     assets: uint256,
     shares_to_burn: uint256, 
     strategies: DynArray[address, MAX_QUEUE]

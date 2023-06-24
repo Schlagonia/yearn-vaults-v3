@@ -21,6 +21,7 @@ def test_withdraw__with_inactive_strategy__reverts(
     strategy = create_strategy(vault)
     inactive_strategy = create_strategy(vault)
     strategies = [inactive_strategy]
+    max_loss = 0
 
     vault.set_role(
         gov.address,
@@ -36,6 +37,7 @@ def test_withdraw__with_inactive_strategy__reverts(
             shares,
             fish.address,
             fish.address,
+            max_loss,
             [s.address for s in strategies],
             sender=fish,
         )
@@ -57,6 +59,7 @@ def test_withdraw__with_liquid_strategy__withdraws(
     shares = amount
     strategy = create_strategy(vault)
     strategies = [strategy]
+    max_loss = 0
 
     vault.set_role(
         gov.address,
@@ -68,7 +71,12 @@ def test_withdraw__with_liquid_strategy__withdraws(
     add_debt_to_strategy(gov, strategy, vault, amount)
 
     tx = vault.withdraw(
-        shares, fish.address, fish.address, [s.address for s in strategies], sender=fish
+        shares,
+        fish.address,
+        fish.address,
+        max_loss,
+        [s.address for s in strategies],
+        sender=fish,
     )
     event = list(tx.decode_logs(vault.Withdraw))
 
@@ -111,6 +119,7 @@ def test_withdraw__with_multiple_liquid_strategies__withdraws(
     first_strategy = create_strategy(vault)
     second_strategy = create_strategy(vault)
     strategies = [first_strategy, second_strategy]
+    max_loss = 0
 
     # deposit assets to vault
     user_deposit(fish, vault, asset, amount)
@@ -126,7 +135,12 @@ def test_withdraw__with_multiple_liquid_strategies__withdraws(
         add_debt_to_strategy(gov, strategy, vault, amount_per_strategy)
 
     tx = vault.withdraw(
-        shares, fish.address, fish.address, [s.address for s in strategies], sender=fish
+        shares,
+        fish.address,
+        fish.address,
+        max_loss,
+        [s.address for s in strategies],
+        sender=fish,
     )
     event = list(tx.decode_logs(vault.Withdraw))
 
@@ -175,6 +189,7 @@ def test_withdraw__locked_funds_with_locked_and_liquid_strategy__reverts(
     liquid_strategy = create_strategy(vault)
     locked_strategy = create_locked_strategy(vault)
     strategies = [locked_strategy, liquid_strategy]
+    max_loss = 0
 
     # deposit assets to vault
     user_deposit(fish, vault, asset, amount)
@@ -197,6 +212,7 @@ def test_withdraw__locked_funds_with_locked_and_liquid_strategy__reverts(
             amount_to_withdraw,
             fish.address,
             fish.address,
+            max_loss,
             [s.address for s in strategies],
             sender=fish,
         )
@@ -223,6 +239,7 @@ def test_withdraw__with_locked_and_liquid_strategy__withdraws(
     liquid_strategy = create_strategy(vault)
     locked_strategy = create_locked_strategy(vault)
     strategies = [locked_strategy, liquid_strategy]
+    max_loss = 0
 
     # deposit assets to vault
     user_deposit(fish, vault, asset, amount)
@@ -241,7 +258,12 @@ def test_withdraw__with_locked_and_liquid_strategy__withdraws(
     locked_strategy.setLockedFunds(amount_to_lock, DAY, sender=gov)
 
     tx = vault.withdraw(
-        shares, fish.address, fish.address, [s.address for s in strategies], sender=fish
+        shares,
+        fish.address,
+        fish.address,
+        max_loss,
+        [s.address for s in strategies],
+        sender=fish,
     )
     event = list(tx.decode_logs(vault.Withdraw))
 
@@ -273,7 +295,122 @@ def test_withdraw__with_locked_and_liquid_strategy__withdraws(
     assert asset.balanceOf(fish) == amount_to_withdraw
 
 
+def test_withdraw__with_lossy_strategy__no_max_loss__reverts(
+    gov,
+    fish,
+    fish_amount,
+    asset,
+    create_vault,
+    create_lossy_strategy,
+    user_deposit,
+    add_strategy_to_vault,
+    add_debt_to_strategy,
+):
+    vault = create_vault(asset)
+    amount = fish_amount
+    amount_per_strategy = amount
+    amount_to_lose = amount_per_strategy // 2  # loss only half of strategy
+    amount_to_withdraw = amount  # withdraw full deposit
+    shares = amount
+    lossy_strategy = create_lossy_strategy(vault)
+    max_loss = 0
+
+    # deposit assets to vault
+    user_deposit(fish, vault, asset, amount)
+
+    # set up strategies
+    vault.set_role(
+        gov.address,
+        ROLES.ADD_STRATEGY_MANAGER | ROLES.DEBT_MANAGER | ROLES.MAX_DEBT_MANAGER,
+        sender=gov,
+    )
+    add_strategy_to_vault(gov, lossy_strategy, vault)
+    add_debt_to_strategy(gov, lossy_strategy, vault, amount_per_strategy)
+
+    # lose half of assets in lossy strategy
+    lossy_strategy.setLoss(gov, amount_to_lose, sender=gov)
+
+    with ape.reverts("to much loss"):
+        vault.withdraw(
+            amount_to_withdraw,
+            fish.address,
+            fish.address,
+            max_loss,
+            [lossy_strategy.address],
+            sender=fish,
+        )
+
+
 def test_withdraw__with_lossy_strategy__withdraws_less_than_deposited(
+    gov,
+    fish,
+    fish_amount,
+    asset,
+    create_vault,
+    create_lossy_strategy,
+    user_deposit,
+    add_strategy_to_vault,
+    add_debt_to_strategy,
+):
+    vault = create_vault(asset)
+    amount = fish_amount
+    amount_per_strategy = amount
+    amount_to_lose = amount_per_strategy // 2  # loss only half of strategy
+    amount_to_withdraw = amount  # withdraw full deposit
+    shares = amount
+    lossy_strategy = create_lossy_strategy(vault)
+    max_loss = 5_000
+
+    # deposit assets to vault
+    user_deposit(fish, vault, asset, amount)
+
+    # set up strategies
+    vault.set_role(
+        gov.address,
+        ROLES.ADD_STRATEGY_MANAGER | ROLES.DEBT_MANAGER | ROLES.MAX_DEBT_MANAGER,
+        sender=gov,
+    )
+    add_strategy_to_vault(gov, lossy_strategy, vault)
+    add_debt_to_strategy(gov, lossy_strategy, vault, amount_per_strategy)
+
+    # lose half of assets in lossy strategy
+    lossy_strategy.setLoss(gov, amount_to_lose, sender=gov)
+
+    tx = vault.withdraw(
+        amount_to_withdraw,
+        fish.address,
+        fish.address,
+        max_loss,
+        [lossy_strategy.address],
+        sender=fish,
+    )
+    event = list(tx.decode_logs(vault.Withdraw))
+
+    assert len(event) >= 1
+    n = len(event) - 1
+    assert event[n].sender == fish
+    assert event[n].receiver == fish
+    assert event[n].owner == fish
+    assert event[n].shares == shares
+    assert event[n].assets == amount_to_withdraw - amount_to_lose
+
+    event = list(tx.decode_logs(vault.DebtUpdated))
+
+    assert len(event) == 1
+    assert event[0].strategy == lossy_strategy.address
+    assert event[0].current_debt == amount_per_strategy
+    assert event[0].new_debt == 0
+
+    assert vault.totalAssets() == 0
+    assert vault.totalSupply() == 0
+    assert vault.totalIdle() == 0
+    assert vault.totalDebt() == 0
+    assert asset.balanceOf(vault) == 0
+    assert asset.balanceOf(lossy_strategy) == 0
+    assert asset.balanceOf(fish) == amount_to_withdraw - amount_to_lose
+
+
+def test_redeem__with_lossy_strategy__withdraws_less_than_deposited(
     gov,
     fish,
     fish_amount,
@@ -307,7 +444,7 @@ def test_withdraw__with_lossy_strategy__withdraws_less_than_deposited(
     # lose half of assets in lossy strategy
     lossy_strategy.setLoss(gov, amount_to_lose, sender=gov)
 
-    tx = vault.withdraw(
+    tx = vault.redeem(
         amount_to_withdraw,
         fish.address,
         fish.address,
@@ -358,6 +495,7 @@ def test_withdraw__with_full_loss_strategy__withdraws_none(
     amount_to_withdraw = amount  # withdraw full deposit
     shares = amount
     lossy_strategy = create_lossy_strategy(vault)
+    max_loss = 10_000
 
     # deposit assets to vault
     user_deposit(fish, vault, asset, amount)
@@ -375,6 +513,75 @@ def test_withdraw__with_full_loss_strategy__withdraws_none(
     lossy_strategy.setLoss(gov, amount_to_lose, sender=gov)
 
     tx = vault.withdraw(
+        amount_to_withdraw,
+        fish.address,
+        fish.address,
+        max_loss,
+        [lossy_strategy.address],
+        sender=fish,
+    )
+    event = list(tx.decode_logs(vault.Withdraw))
+
+    assert len(event) >= 1
+    n = len(event) - 1
+    assert event[n].sender == fish
+    assert event[n].receiver == fish
+    assert event[n].owner == fish
+    assert event[n].shares == shares
+    assert event[n].assets == amount_to_withdraw - amount_to_lose
+
+    event = list(tx.decode_logs(vault.DebtUpdated))
+
+    assert len(event) == 1
+    assert event[0].strategy == lossy_strategy.address
+    assert event[0].current_debt == amount_per_strategy
+    assert event[0].new_debt == 0
+
+    assert vault.totalAssets() == 0
+    assert vault.totalSupply() == 0
+    assert vault.totalIdle() == 0
+    assert vault.totalDebt() == 0
+    assert asset.balanceOf(vault) == 0
+    assert asset.balanceOf(lossy_strategy) == 0
+    assert asset.balanceOf(fish) == amount_to_withdraw - amount_to_lose
+
+
+def test_redeem__with_full_loss_strategy__withdraws_none(
+    gov,
+    fish,
+    fish_amount,
+    asset,
+    create_vault,
+    create_lossy_strategy,
+    user_deposit,
+    add_strategy_to_vault,
+    add_debt_to_strategy,
+):
+    vault = create_vault(asset)
+    amount = fish_amount
+    amount_per_strategy = amount
+    amount_to_lose = amount_per_strategy  # loss all of strategy
+    amount_to_withdraw = amount  # withdraw full deposit
+    shares = amount
+    lossy_strategy = create_lossy_strategy(vault)
+    max_loss = 0
+
+    # deposit assets to vault
+    user_deposit(fish, vault, asset, amount)
+
+    # set up strategies
+    vault.set_role(
+        gov.address,
+        ROLES.ADD_STRATEGY_MANAGER | ROLES.DEBT_MANAGER | ROLES.MAX_DEBT_MANAGER,
+        sender=gov,
+    )
+    add_strategy_to_vault(gov, lossy_strategy, vault)
+    add_debt_to_strategy(gov, lossy_strategy, vault, amount_per_strategy)
+
+    # lose half of assets in lossy strategy
+    lossy_strategy.setLoss(gov, amount_to_lose, sender=gov)
+
+    tx = vault.redeem(
         amount_to_withdraw,
         fish.address,
         fish.address,
@@ -428,6 +635,7 @@ def test_withdraw__with_lossy_and_liquid_strategy__withdraws_less_than_deposited
     liquid_strategy = create_strategy(vault)
     lossy_strategy = create_lossy_strategy(vault)
     strategies = [lossy_strategy, liquid_strategy]
+    max_loss = 2_500
 
     # deposit assets to vault
     user_deposit(fish, vault, asset, amount)
@@ -449,6 +657,7 @@ def test_withdraw__with_lossy_and_liquid_strategy__withdraws_less_than_deposited
         amount_to_withdraw,
         fish.address,
         fish.address,
+        max_loss,
         [s.address for s in strategies],
         sender=fish,
     )
@@ -482,7 +691,7 @@ def test_withdraw__with_lossy_and_liquid_strategy__withdraws_less_than_deposited
     assert asset.balanceOf(fish) == amount_to_withdraw - amount_to_lose
 
 
-def test_withdraw__with_full_lossy_and_liquid_strategy__withdraws_less_than_deposited(
+def test_redeem__with_full_lossy_and_liquid_strategy__withdraws_less_than_deposited(
     gov,
     fish,
     fish_amount,
@@ -520,7 +729,7 @@ def test_withdraw__with_full_lossy_and_liquid_strategy__withdraws_less_than_depo
     # lose half of assets in lossy strategy
     lossy_strategy.setLoss(gov, amount_to_lose, sender=gov)
 
-    tx = vault.withdraw(
+    tx = vault.redeem(
         amount_to_withdraw,
         fish.address,
         fish.address,
@@ -578,6 +787,7 @@ def test_withdraw__with_liquid_and_lossy_strategy__withdraws_less_than_deposited
     liquid_strategy = create_strategy(vault)
     lossy_strategy = create_lossy_strategy(vault)
     strategies = [liquid_strategy, lossy_strategy]
+    max_loss = 2_500
 
     # deposit assets to vault
     user_deposit(fish, vault, asset, amount)
@@ -599,6 +809,7 @@ def test_withdraw__with_liquid_and_lossy_strategy__withdraws_less_than_deposited
         amount_to_withdraw,
         fish.address,
         fish.address,
+        max_loss,
         [s.address for s in strategies],
         sender=fish,
     )
@@ -632,7 +843,7 @@ def test_withdraw__with_liquid_and_lossy_strategy__withdraws_less_than_deposited
     assert asset.balanceOf(fish) == amount_to_withdraw - amount_to_lose
 
 
-def test_withdraw__with_liquid_and_full_lossy_strategy__withdraws_less_than_deposited(
+def test_redeem__with_liquid_and_full_lossy_strategy__withdraws_less_than_deposited(
     gov,
     fish,
     fish_amount,
@@ -670,7 +881,7 @@ def test_withdraw__with_liquid_and_full_lossy_strategy__withdraws_less_than_depo
     # lose half of assets in lossy strategy
     lossy_strategy.setLoss(gov, amount_to_lose, sender=gov)
 
-    tx = vault.withdraw(
+    tx = vault.redeem(
         amount_to_withdraw,
         fish.address,
         fish.address,
@@ -705,6 +916,56 @@ def test_withdraw__with_liquid_and_full_lossy_strategy__withdraws_less_than_depo
     assert asset.balanceOf(liquid_strategy) == 0
     assert asset.balanceOf(lossy_strategy) == 0
     assert asset.balanceOf(fish) == amount_to_withdraw - amount_to_lose
+
+
+def test_withdraw__with_liquid_and_lossy_strategy_that_losses_while_withdrawing__no_max_loss__reverts(
+    gov,
+    fish,
+    fish_amount,
+    asset,
+    create_vault,
+    create_strategy,
+    create_lossy_strategy,
+    user_deposit,
+    add_strategy_to_vault,
+    add_debt_to_strategy,
+):
+    vault = create_vault(asset)
+    amount = fish_amount
+    amount_per_strategy = amount // 2  # deposit half of amount per strategy
+    amount_to_lose = amount_per_strategy // 2  # loss only half of strategy
+    amount_to_withdraw = amount  # withdraw full deposit
+    shares = amount
+    liquid_strategy = create_strategy(vault)
+    lossy_strategy = create_lossy_strategy(vault)
+    strategies = [liquid_strategy, lossy_strategy]
+    max_loss = 0
+
+    # deposit assets to vault
+    user_deposit(fish, vault, asset, amount)
+
+    # set up strategies
+    vault.set_role(
+        gov.address,
+        ROLES.ADD_STRATEGY_MANAGER | ROLES.DEBT_MANAGER | ROLES.MAX_DEBT_MANAGER,
+        sender=gov,
+    )
+    for strategy in strategies:
+        add_strategy_to_vault(gov, strategy, vault)
+        add_debt_to_strategy(gov, strategy, vault, amount_per_strategy)
+
+    # lose half of assets in lossy strategy
+    lossy_strategy.setWithdrawingLoss(amount_to_lose, sender=gov)
+
+    with ape.reverts("to much loss"):
+        tx = vault.withdraw(
+            amount_to_withdraw,
+            fish.address,
+            fish.address,
+            max_loss,
+            [s.address for s in strategies],
+            sender=fish,
+        )
 
 
 def test_withdraw__with_liquid_and_lossy_strategy_that_losses_while_withdrawing__withdraws_less_than_deposited(
@@ -728,6 +989,7 @@ def test_withdraw__with_liquid_and_lossy_strategy_that_losses_while_withdrawing_
     liquid_strategy = create_strategy(vault)
     lossy_strategy = create_lossy_strategy(vault)
     strategies = [liquid_strategy, lossy_strategy]
+    max_loss = 2_500
 
     # deposit assets to vault
     user_deposit(fish, vault, asset, amount)
@@ -749,6 +1011,7 @@ def test_withdraw__with_liquid_and_lossy_strategy_that_losses_while_withdrawing_
         amount_to_withdraw,
         fish.address,
         fish.address,
+        max_loss,
         [s.address for s in strategies],
         sender=fish,
     )
@@ -782,7 +1045,7 @@ def test_withdraw__with_liquid_and_lossy_strategy_that_losses_while_withdrawing_
     assert asset.balanceOf(fish) == amount_to_withdraw - amount_to_lose
 
 
-def test_withdraw__half_of_assets_from_lossy_strategy_that_losses_while_withdrawing__withdraws_less_than_deposited(
+def test_redeem__half_of_assets_from_lossy_strategy_that_losses_while_withdrawing__withdraws_less_than_deposited(
     gov,
     fish,
     fish_amount,
@@ -820,7 +1083,7 @@ def test_withdraw__half_of_assets_from_lossy_strategy_that_losses_while_withdraw
     # lose half of assets in lossy strategy
     lossy_strategy.setWithdrawingLoss(amount_to_lose, sender=gov)
 
-    tx = vault.withdraw(
+    tx = vault.redeem(
         amount_to_withdraw,
         fish.address,
         fish.address,
@@ -856,6 +1119,58 @@ def test_withdraw__half_of_assets_from_lossy_strategy_that_losses_while_withdraw
     assert asset.balanceOf(fish) == amount_to_withdraw - amount_to_lose
 
 
+def test_withdraw__half_of_strategy_assets_from_lossy_strategy_with_unrealised_losses__no_max_fee__reverts(
+    gov,
+    fish,
+    fish_amount,
+    asset,
+    create_vault,
+    create_strategy,
+    create_lossy_strategy,
+    user_deposit,
+    add_strategy_to_vault,
+    add_debt_to_strategy,
+):
+    vault = create_vault(asset)
+    amount = fish_amount
+    amount_per_strategy = amount // 2  # deposit half of amount per strategy
+    amount_to_lose = amount_per_strategy // 2  # loss only half of strategy
+    amount_to_withdraw = (
+        amount // 4
+    )  # withdraw a quarter deposit (half of strategy debt)
+    shares = amount
+    liquid_strategy = create_strategy(vault)
+    lossy_strategy = create_lossy_strategy(vault)
+    strategies = [lossy_strategy, liquid_strategy]
+    max_loss = 0
+
+    # deposit assets to vault
+    user_deposit(fish, vault, asset, amount)
+
+    # set up strategies
+    vault.set_role(
+        gov.address,
+        ROLES.ADD_STRATEGY_MANAGER | ROLES.DEBT_MANAGER | ROLES.MAX_DEBT_MANAGER,
+        sender=gov,
+    )
+    for strategy in strategies:
+        add_strategy_to_vault(gov, strategy, vault)
+        add_debt_to_strategy(gov, strategy, vault, amount_per_strategy)
+
+    # lose half of assets in lossy strategy
+    lossy_strategy.setLoss(gov, amount_to_lose, sender=gov)
+
+    with ape.reverts("to much loss"):
+        tx = vault.withdraw(
+            amount_to_withdraw,
+            fish.address,
+            fish.address,
+            max_loss,
+            [s.address for s in strategies],
+            sender=fish,
+        )
+
+
 def test_withdraw__half_of_strategy_assets_from_lossy_strategy_with_unrealised_losses__withdraws_less_than_deposited(
     gov,
     fish,
@@ -879,6 +1194,7 @@ def test_withdraw__half_of_strategy_assets_from_lossy_strategy_with_unrealised_l
     liquid_strategy = create_strategy(vault)
     lossy_strategy = create_lossy_strategy(vault)
     strategies = [lossy_strategy, liquid_strategy]
+    max_loss = 5_000
 
     # deposit assets to vault
     user_deposit(fish, vault, asset, amount)
@@ -900,6 +1216,7 @@ def test_withdraw__half_of_strategy_assets_from_lossy_strategy_with_unrealised_l
         amount_to_withdraw,
         fish.address,
         fish.address,
+        max_loss,
         [s.address for s in strategies],
         sender=fish,
     )
@@ -936,7 +1253,7 @@ def test_withdraw__half_of_strategy_assets_from_lossy_strategy_with_unrealised_l
     assert vault.balanceOf(fish) == amount - amount_to_withdraw
 
 
-def test_withdraw__half_of_strategy_assets_from_locked_lossy_strategy_with_unrealised_losses__withdraws_less_than_deposited(
+def test_redeem__half_of_strategy_assets_from_locked_lossy_strategy_with_unrealised_losses__withdraws_less_than_deposited(
     gov,
     fish,
     fish_amount,
@@ -979,7 +1296,7 @@ def test_withdraw__half_of_strategy_assets_from_locked_lossy_strategy_with_unrea
     # Lock half the remaining funds.
     lossy_strategy.setLockedFunds(amount_to_lock, DAY, sender=gov)
 
-    tx = vault.withdraw(
+    tx = vault.redeem(
         amount_to_withdraw,
         fish.address,
         fish.address,
@@ -1051,6 +1368,8 @@ def test_withdraw__with_multiple_liquid_strategies_more_assets_than_debt__withdr
     first_strategy = create_strategy(vault)
     second_strategy = create_strategy(vault)
     strategies = [first_strategy, second_strategy]
+    max_loss = 0
+
     profit = (
         amount_per_strategy + 1
     )  # enough so that it could serve a full withdraw with the profit
@@ -1071,7 +1390,12 @@ def test_withdraw__with_multiple_liquid_strategies_more_assets_than_debt__withdr
     asset.transfer(first_strategy, profit, sender=gov)
 
     tx = vault.withdraw(
-        shares, fish.address, fish.address, [s.address for s in strategies], sender=fish
+        shares,
+        fish.address,
+        fish.address,
+        max_loss,
+        [s.address for s in strategies],
+        sender=fish,
     )
     event = list(tx.decode_logs(vault.Withdraw))
 
